@@ -71,6 +71,7 @@ class HttpConn{
     private:
         int m_sock_fd;
         struct sockaddr_in m_addr;
+        int m_trigger_mode;
 
         // 读写事务标志位
         uint8_t m_read_write = 255;
@@ -88,8 +89,7 @@ class HttpConn{
         int m_write_idx = 0;
 
         static int m_epoll_fd;
-        static int m_trigger_mode;
-
+        
     // tools
     private:
         void del_from_epoll();
