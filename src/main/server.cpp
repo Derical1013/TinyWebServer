@@ -50,6 +50,9 @@ int main(){
         perror("epoll add failed");
     }
 
+    char root[13] = "../../static";
+    char* static_path = (char*)malloc(sizeof(root));
+    strcpy(static_path, root);
     ThreadPool thread_pool(4,100);
     std::unordered_map<int, HttpConn*> conns;
 
@@ -74,7 +77,8 @@ int main(){
 
                 HttpConn* request = new HttpConn();
                 conns[peer_fd] = request;
-                request->init_connection(peer_fd, peer_addr, epfd, HttpConn::TRIGGER_ET);
+                request->m_user_cnt++;
+                request->init_connection(peer_fd, peer_addr, static_path, epfd, HttpConn::TRIGGER_ET);
             }
             // conn fd
             else if (ev_array[i].events & EPOLLIN){
@@ -85,5 +89,6 @@ int main(){
         }
     }
 
+    free(static_path);
     close(fd);
 }

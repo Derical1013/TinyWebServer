@@ -12,6 +12,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <unordered_map>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/uio.h>
+#include <cstdarg>
 
 class HttpConn{
     public:
@@ -84,31 +88,55 @@ class HttpConn{
         CheckState m_check_state;
         struct HttpRequest m_request;
 
+        // 事务
+        char* m_static_path;
+        struct stat m_file_stat;
+        char* m_file_addr;
+
         // 写缓冲区与响应报文
         char m_write_buffer[WRITE_BUFFER_SIZE];
         int m_write_idx = 0;
+        // 写向量
+        struct iovec m_iovec[2];
+        int m_iovev_cnt;
+        int m_iovec_bytes_left;
 
+    public:
+        //类变量
         static int m_epoll_fd;
+        static int m_user_cnt;
         
     // tools
     private:
         void del_from_epoll();
         void reset_state();
+        void register_epoll(int ev);
 
     public:
-        void init_connection(int sock_fd, const struct sockaddr_in &addr,int epoll_fd, int trigger_mode);
-        void read_data();
+        void init_connection(int sock_fd, const struct sockaddr_in &addr, char* static_path, int epoll_fd, int trigger_mode);
+        bool read_data();
+
         // 解析HTTP请求
-        HttpConn::HttpCode parse_request();
-        HttpConn::LineStatus pares_line();
+        LineStatus pares_line();
         HttpCode parse_request_line(char* s);
         HttpCode parse_header(char* s);
         HttpCode parse_content(char* s);
-
         void parse_query_parameter(char *p);
         
-        // 处理HTTP请求
-        void process_request();
+        // 处理HTTP请求和响应报文
+        HttpCode handle_route();
+        bool add_response(const char* format, ...);
+        bool add_status_line(int status, const char* reason_phrase);
+        bool add_blank_line();
+        bool add_content_length(int len);
+        // TODO: 增加枚举参数控制content-type
+        bool add_content_type();
+        bool add_connection_status_header();
+        bool add_content(const char *txt);
+
+        void process_http();
+        HttpCode process_request();
+        bool process_response(HttpCode state);
 };
 
 
