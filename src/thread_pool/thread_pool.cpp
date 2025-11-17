@@ -74,7 +74,6 @@ void ThreadPool::run(){
         HttpConn* request = m_queue.front();
         m_queue.pop();
         m_queue_lock.unlock();
-        request->read_data();
         request->process_http();
     }
 }

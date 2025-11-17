@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string>
 #include <string.h>
 #include <unordered_map>
 #include <sys/stat.h>
@@ -71,6 +72,8 @@ class HttpConn{
         static constexpr int TRIGGER_ET = 1;
         static constexpr int READ_BUFFER_SIZE = 2048;
         static constexpr int WRITE_BUFFER_SIZE = 2048;
+        static constexpr int READ_MODE = 0;
+        static constexpr int WRITE_MODE = 1;
 
     private:
         int m_sock_fd;
@@ -134,9 +137,10 @@ class HttpConn{
         bool add_connection_status_header();
         bool add_content(const char *txt);
 
-        void process_http();
+        bool process_http();
         HttpCode process_request();
         bool process_response(HttpCode state);
+        bool process_write();
 };
 
 

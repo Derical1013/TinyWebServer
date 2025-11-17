@@ -35,6 +35,8 @@ void HttpConn::init_connection(int sock_fd, const struct sockaddr_in &addr,
     else
         event.events = EPOLLIN;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event);
+
+    reset_state();
 }
 
 bool HttpConn::read_data(){
@@ -42,6 +44,9 @@ bool HttpConn::read_data(){
     // 缓冲区溢出
     if (m_read_idx >= READ_BUFFER_SIZE){
         printf("Read_buffer overflow\n");
+        epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
+        close(m_sock_fd);
+        --m_user_cnt;
         return false;
     }
 
@@ -50,10 +55,14 @@ bool HttpConn::read_data(){
         int len = recv(m_sock_fd, m_read_buffer + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
         if (len == 0){
             printf("Client is disconnected.\n");
+            epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
+            close(m_sock_fd);
+            --m_user_cnt;
             return false;
         }
         else if (len < 0){
             perror("LT read");
+            epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
             close(m_sock_fd);
             m_user_cnt--;
             return false;
@@ -67,6 +76,9 @@ bool HttpConn::read_data(){
             int len = recv(m_sock_fd, m_read_buffer + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
             if (len == 0){
                 printf("Client is disconnected.\n");
+                epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
+                close(m_sock_fd);
+                --m_user_cnt;
                 return false;
             }
             else if (len < 0){
@@ -75,6 +87,7 @@ bool HttpConn::read_data(){
                 }
                 //出现错误
                 perror("ET read");
+                epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
                 close(m_sock_fd);
                 m_user_cnt--;
                 return false;
@@ -83,6 +96,9 @@ bool HttpConn::read_data(){
             //overflow
             if (m_read_idx >= READ_BUFFER_SIZE){
                 printf("Read_buffer overflow\n");
+                epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
+                close(m_sock_fd);
+                --m_user_cnt;
                 return false;
             }
         }
@@ -96,11 +112,15 @@ void HttpConn::reset_state(){
     m_checked_idx = 0;
     m_start_line = 0;
     m_check_state = CheckState::request_line;
-    m_trigger_mode = TRIGGER_LT;
+    //m_trigger_mode = TRIGGER_LT;
     m_request = HttpRequest{};
+
+    m_read_write = READ_MODE;
 
     m_write_idx = 0;
     memset(&m_file_stat, 0, sizeof(m_file_stat));
+
+    m_iovec_bytes_left = 0;
 }
 
 /*
@@ -135,8 +155,7 @@ HttpConn::HttpCode HttpConn::process_request(){
                         // 无body
                         if (ret == HttpCode::get_request){
                             printf("NO CONTENT. Processing request...\n");
-                            handle_route();
-                            return ret;
+                            return handle_route();
                         }
                         // 有content的情况会自动跳转到content状态
                         break;
@@ -146,8 +165,7 @@ HttpConn::HttpCode HttpConn::process_request(){
                         // 解析完成
                         if (ret == HttpCode::get_request){
                             printf("FIND CONTENT. Processing request...\n");
-                            handle_route();
-                            return ret;
+                            return handle_route();
                         }
                         // 设置状态调用parse_line继续解析
                         line_status = LineStatus::line_open;
@@ -274,6 +292,9 @@ HttpConn::HttpCode HttpConn::parse_header(char* s){
         s += strspn(s, "\t ");
         m_request.content_len = atoi(s);
     }
+    else{
+        printf("Ignore header: %s\n", s);
+    }
 
     return HttpCode::no_request;
 };
@@ -320,16 +341,21 @@ HttpConn::HttpCode HttpConn::handle_route(){
     strcat(dst, m_static_path);
     if (strncasecmp(p, "/register", 9) == 0){
         strcat(dst, p);
+        strcat(dst, ".html");
     }
     else if (strncasecmp(p, "/login", 6) == 0){
-        strcat(dst, p);
+        strcat(dst, "/log.html");
     }
     else if (strncasecmp(p, "/picture", 8) == 0){
         strcat(dst, p);
+        strcat(dst, ".html");
     }
     else if (strncasecmp(p, "/video", 6) == 0){
         strcat(dst, p);
+        strcat(dst, ".html");
     }
+
+    // printf("target file path:%s\n", dst);
 
     // 文件不存在
     if (stat(dst, &m_file_stat) == -1)
@@ -427,7 +453,7 @@ bool HttpConn::add_response(const char* format, ...){
         va_end(arg_list);
         return false;
     }
-    m_read_idx += len;
+    m_write_idx += len;
     va_end(arg_list);
 
     return true;
@@ -464,23 +490,65 @@ bool HttpConn::add_content(const char *txt){
     return add_response("%s", txt);
 }
 
-void HttpConn::process_http(){
+bool HttpConn::process_http(){
 
-    // 仍有未收到的请求报文
-    HttpCode ret = process_request();
-    // 为了避免出现两个线程竞争一个报文的情况，设置为EPOLLONESHOT，但也因此需要再注册一次
-    if (ret == HttpCode::no_request){
-        register_epoll(EPOLLIN);
+    if (m_read_write == READ_MODE){
+        //读取Http报文
+        if (!read_data())
+            return false;
+        HttpCode ret = process_request();
+        // 仍有未收到的请求报文
+        // 为了避免出现两个线程竞争一个报文的情况，设置为EPOLLONESHOT，但也因此需要再注册一次
+        if (ret == HttpCode::no_request){
+            register_epoll(EPOLLIN);
+            return true;
+        }
+        
+        switch(ret){
+            case HttpCode::no_request:
+                printf("no_request\n");
+                break;
+            case HttpCode::file_request:
+                printf("file_request\n");
+                break;
+            case HttpCode::internal_error:
+                printf("internal_error\n");
+                break;
+            case HttpCode::bad_request:
+                printf("bad_request\n");
+                break;
+            case HttpCode::forbidden_request:
+                printf("forbidden_request\n");
+                break;
+            case HttpCode::get_request:
+                printf("get_request\n");
+                break;
+            case HttpCode::no_resource:
+                printf("no_resource\n");
+                break;
+            default:
+                printf("default %d\n", static_cast<int>(ret));
+                break;
+        }
+
+        if (!process_response(ret)){
+            printf("Write buffer overflow\n");
+            printf("Close sock %d\n", m_sock_fd);
+            epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
+            close(m_sock_fd);
+            --m_user_cnt;
+            return false;
+        }
+        m_read_write = WRITE_MODE;
+        register_epoll(EPOLLOUT);
     }
-    
-    if (!process_response(ret)){
-        printf("Write buffer overflow\n");
-        printf("Close sock %d\n", m_sock_fd);
-        epoll_ctl(m_epoll_fd, EPOLL_CTL_DEL, m_sock_fd, 0);
-        close(m_sock_fd);
-        --m_user_cnt;
+    else if (m_read_write == WRITE_MODE){
+        printf("Processing response...\n");
+        printf("Repsonse:\n%s\n", m_write_buffer);
+        process_write();
     }
-    register_epoll(EPOLLOUT);
+
+    return true;
 }
 
 void HttpConn::register_epoll(int ev){
@@ -499,5 +567,58 @@ void HttpConn::register_epoll(int ev){
             event.events = EPOLLOUT | EPOLLONESHOT;
     }
 
-    epoll_ctl(m_epoll_fd, EPOLL_CTL_ADD, m_sock_fd, &event);
+    epoll_ctl(m_epoll_fd, EPOLL_CTL_MOD, m_sock_fd, &event);
+}
+
+bool HttpConn::process_write(){
+    int len = 0;
+    int bytes_sent = 0;
+
+    //长连接状态下，发送完响应报文等待client后续请求
+    if (m_iovec_bytes_left == 0 && m_request.keep_alive){
+        register_epoll(EPOLLIN);
+        return true;
+    }
+
+    while(true){
+        len = writev(m_sock_fd, m_iovec, m_iovev_cnt);
+
+        if(len < 0){
+            // 发送缓冲区满
+            if (errno == EAGAIN){
+                register_epoll(EPOLLOUT);
+                return true;
+            }
+            // 发生其他错误
+            perror("write buffer");
+            munmap(m_file_addr, m_file_stat.st_size);
+            m_file_addr = 0;
+        }
+        m_iovec_bytes_left -= len;
+        bytes_sent += len;
+        //响应报文的 首行 header \r\n已经发完
+        if (bytes_sent >= m_iovec[0].iov_len){
+            m_iovec[0].iov_len = 0;
+            m_iovec[1].iov_base = m_file_addr + bytes_sent - m_write_idx;
+            m_iovec[1].iov_len = m_iovec_bytes_left;
+        }
+        else{
+            m_iovec[0].iov_len = m_write_idx - bytes_sent;
+            m_iovec[0].iov_base = m_write_buffer + bytes_sent;
+        }
+        if (m_iovec_bytes_left <= 0){
+
+            munmap(m_file_addr, m_file_stat.st_size);
+            m_file_addr = 0;
+            register_epoll(EPOLLIN);
+
+            if (m_request.keep_alive){
+                reset_state();
+                return true;
+            }
+            else{
+                return false;
+            }
+        }
+    }
 }

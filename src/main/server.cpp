@@ -50,7 +50,7 @@ int main(){
         perror("epoll add failed");
     }
 
-    char root[13] = "../../static";
+    char root[64] = "/home/derical/linux_cpp/webserver/TinyWebServer/static";
     char* static_path = (char*)malloc(sizeof(root));
     strcpy(static_path, root);
     ThreadPool thread_pool(4,100);
@@ -82,6 +82,12 @@ int main(){
             }
             // conn fd
             else if (ev_array[i].events & EPOLLIN){
+                int fd = ev_array[i].data.fd;
+                HttpConn* request = conns[fd];
+                thread_pool.add_task(request);
+            }
+            else if (ev_array[i].events & EPOLLOUT){
+                printf("EPOLLOUT triggered\n");
                 int fd = ev_array[i].data.fd;
                 HttpConn* request = conns[fd];
                 thread_pool.add_task(request);
