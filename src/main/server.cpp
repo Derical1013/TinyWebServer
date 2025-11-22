@@ -1,5 +1,6 @@
 #include "../../include/thread_pool.h"
 #include "../../include/http_conn.h"
+#include "../../include/mysql_pool.h"
 #include <stdio.h>
 #include <queue>
 #include <unordered_map>
@@ -53,8 +54,13 @@ int main(){
     char root[64] = "/home/derical/linux_cpp/webserver/TinyWebServer/static";
     char* static_path = (char*)malloc(sizeof(root));
     strcpy(static_path, root);
-    ThreadPool thread_pool(4,100);
+    ConnPool* conn_pool = ConnPool::get_instance();
+    conn_pool->init(8, "localhost", "root", "123456", "tinywebserver", 3306);
+    ThreadPool thread_pool(4,100, conn_pool);
     std::unordered_map<int, HttpConn*> conns;
+
+    
+    HttpConn::init_mysql_result(conn_pool);
 
     struct epoll_event ev_array[ARRAY_SIZE];
     while(1){

@@ -7,11 +7,12 @@
 #include "http_conn.h"
 #include "mutex_lock.h"
 #include "sem.h"
+#include "mysql_pool.h"
 
 
 class ThreadPool{
     public:
-        ThreadPool(int thread_num, int queue_capacity);
+        ThreadPool(int thread_num, int queue_capacity, ConnPool* conn_pool);
         ~ThreadPool();
         bool add_task(HttpConn* request);
 
@@ -27,6 +28,8 @@ class ThreadPool{
         MutexLock m_queue_lock;
         Sem m_queue_sem;
         std::atomic<bool> m_stop{false};
+        //连接池
+        ConnPool* m_conn_pool;
 
     private:
         /*

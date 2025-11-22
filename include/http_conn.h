@@ -1,6 +1,8 @@
 #ifndef HTTP_CONN_H
 #define HTTP_CONN_H
 
+#include "mysql_pool.h"
+#include "mutex_lock.h"
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
@@ -103,6 +105,13 @@ class HttpConn{
         struct iovec m_iovec[2];
         int m_iovev_cnt;
         int m_iovec_bytes_left;
+        int m_iovec_bytes_sent;
+
+        //数据库连接
+        static std::unordered_map<std::string, std::string> m_db_users;
+        MutexLock m_db_lock;
+    public:
+        MYSQL* m_mysql;
 
     public:
         //类变量
@@ -118,6 +127,7 @@ class HttpConn{
     public:
         void init_connection(int sock_fd, const struct sockaddr_in &addr, char* static_path, int epoll_fd, int trigger_mode);
         bool read_data();
+        static void init_mysql_result(ConnPool* conn_pool);
 
         // 解析HTTP请求
         LineStatus pares_line();

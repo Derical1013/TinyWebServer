@@ -1,22 +1,21 @@
 .PHONY: clean
 
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -pthread
+CXXFLAGS = -std=c++11 -Wall -pthread -I/usr/include/mysql
 
 SRC_DIR = src
 OBJ_DIR = obj
 BIN_DIR = bin
 
 TARGET = $(BIN_DIR)/server
-SRCS = $(SRC_DIR)/http_conn/http_conn.cpp \
-	   $(SRC_DIR)/main/server.cpp \
-	   $(SRC_DIR)/thread_pool/thread_pool.cpp
-OBJS = $(patsubst $(SRC_DIR)/%/%.cpp,$(OBJ_DIR)/%.o,$(SRCS))
+SRCS = $(shell find $(SRC_DIR) -name "*.cpp")
+OBJS = $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 
 $(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) $(OBJS) -o $@ 
+	$(CXX) $(CXXFLAGS) $(OBJS) -o $@ -lmysqlclient
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:

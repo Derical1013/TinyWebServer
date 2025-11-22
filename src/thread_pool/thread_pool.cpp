@@ -1,7 +1,10 @@
 #include "../../include/thread_pool.h"
 
 
-ThreadPool::ThreadPool(int thread_num, int queue_capacity): m_thread_num(thread_num), m_queue_capacity(queue_capacity){
+ThreadPool::ThreadPool(int thread_num, int queue_capacity, ConnPool* conn_pool): 
+                m_thread_num(thread_num), m_queue_capacity(queue_capacity),
+                m_conn_pool(conn_pool)
+{
 
     m_threads = new pthread_t[m_thread_num];
     int ret = 0;
@@ -74,6 +77,7 @@ void ThreadPool::run(){
         HttpConn* request = m_queue.front();
         m_queue.pop();
         m_queue_lock.unlock();
+        ConnRaii conn_raii(&request->m_mysql, m_conn_pool);
         request->process_http();
     }
 }

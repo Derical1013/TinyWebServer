@@ -14,6 +14,9 @@ const char* STATUS_404_MSG = "Access to the requested resource is denied.\n";
 const char* STATUS_500 = "Internal Server Error";
 const char* STATUS_500_MSG = "The server encountered an unexpected condition that prevented it from fulfilling the request.\n";
 
+std::unordered_map<std::string, std::string> HttpConn::m_db_users;
+
+
 void HttpConn::init_connection(int sock_fd, const struct sockaddr_in &addr, 
                                 char* static_path,
                                 int epoll_fd, int trigger_mode){
@@ -37,6 +40,28 @@ void HttpConn::init_connection(int sock_fd, const struct sockaddr_in &addr,
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event);
 
     reset_state();
+}
+
+void HttpConn::init_mysql_result(ConnPool* conn_pool){
+
+    MYSQL *mysql = NULL;
+    ConnRaii conn_raii(&mysql, conn_pool);
+    if (mysql_query(mysql, "SELECT username, password FROM users")){
+        printf("mysql_query failed: %s\n", mysql_error(mysql));
+    }
+    MYSQL_RES *result = mysql_store_result(mysql);
+    if (result == NULL) {
+        printf("mysql_store_result failed: %s\n", mysql_error(mysql));
+    }
+    else{
+        // int num_fields = mysql_field_count(m_mysql);
+        MYSQL_ROW res;
+        while (res = mysql_fetch_row(result)){
+            std::string name(res[0]);
+            std::string passwd(res[1]);
+            m_db_users[name] = passwd;
+        }
+    }
 }
 
 bool HttpConn::read_data(){
@@ -121,6 +146,7 @@ void HttpConn::reset_state(){
     memset(&m_file_stat, 0, sizeof(m_file_stat));
 
     m_iovec_bytes_left = 0;
+    m_iovec_bytes_sent = 0;
 }
 
 /*
@@ -265,7 +291,7 @@ HttpConn::HttpCode HttpConn::parse_request_line(char* s){
 }
 
 HttpConn::HttpCode HttpConn::parse_header(char* s){
-    printf("Header:\n%s\n", s);
+    // printf("Header:\n%s\n", s);
     if (s[0] == '\0'){
         // 有请求体
         if (m_request.content_len != 0){
@@ -293,7 +319,7 @@ HttpConn::HttpCode HttpConn::parse_header(char* s){
         m_request.content_len = atoi(s);
     }
     else{
-        printf("Ignore header: %s\n", s);
+        // printf("Ignore header: %s\n", s);
     }
 
     return HttpCode::no_request;
@@ -337,9 +363,60 @@ void HttpConn::parse_query_parameter(char *p){
 HttpConn::HttpCode HttpConn::handle_route(){
 
     char* p = m_request.route;
-    char dst[64]  = "";
+    char dst[256]  = "";
     strcat(dst, m_static_path);
-    if (strncasecmp(p, "/register", 9) == 0){
+    if (m_request.method == Method::post){
+        // 提取用户名和密码
+        // content格式是application/x-www-form-urlencoded
+        // user=xxx&password=xxx
+        char* s = m_request.content;
+        char name[100], password[100];
+        char *token = strtok(s, "&");
+
+        while (token != NULL){
+            char *eq = strchr(token, '=');
+            *eq = '\0';
+
+            if (strcmp(token, "user") == 0) {
+                strcpy(name, eq + 1);
+            } 
+            else if (strcmp(token, "password") == 0) {
+                strcpy(password, eq + 1);
+            }
+            token = strtok(NULL, "&");
+        }
+
+        //log
+        if (*(p + 1) == '2'){
+            if (m_db_users.find(name) != m_db_users.end()){
+                strcat(dst, "/welcome.html");
+            }
+            else{
+                strcat(dst, "/logError.html");
+            }
+        }
+        //register
+        else if (*(p + 1) == '3'){
+            if (m_db_users.find(name) == m_db_users.end()){
+                char sql_insert[200];
+                strcpy(sql_insert, "insert into users (username, password) values ('");
+                strcat(sql_insert, name);
+                strcat(sql_insert, "', '");
+                strcat(sql_insert, password);
+                strcat(sql_insert, "')");
+                mysql_query(m_mysql, sql_insert);
+                m_db_lock.lock();
+                m_db_users[std::string(name)] = std::string(password);
+                m_db_lock.unlock();
+                // strcat(dst, "/welcome.html");
+                strcat(dst, "/log.html");
+            }
+            else{
+                strcat(dst, "/registerError.html");
+            }
+        }
+    }
+    else if (strncasecmp(p, "/register", 9) == 0){
         strcat(dst, p);
         strcat(dst, ".html");
     }
@@ -354,8 +431,15 @@ HttpConn::HttpCode HttpConn::handle_route(){
         strcat(dst, p);
         strcat(dst, ".html");
     }
+    else if (strncasecmp(p, "/fans", 4) == 0){
+        strcat(dst, p);
+        strcat(dst, ".html");
+    }
+    else{
+        snprintf(dst + strlen(m_static_path), 256, "%s", p);
+    }
 
-    // printf("target file path:%s\n", dst);
+    printf("target file path:%s\n", dst);
 
     // 文件不存在
     if (stat(dst, &m_file_stat) == -1)
@@ -544,7 +628,7 @@ bool HttpConn::process_http(){
     }
     else if (m_read_write == WRITE_MODE){
         printf("Processing response...\n");
-        printf("Repsonse:\n%s\n", m_write_buffer);
+        printf("Response:\n%s\n", m_write_buffer);
         process_write();
     }
 
@@ -572,7 +656,6 @@ void HttpConn::register_epoll(int ev){
 
 bool HttpConn::process_write(){
     int len = 0;
-    int bytes_sent = 0;
 
     //长连接状态下，发送完响应报文等待client后续请求
     if (m_iovec_bytes_left == 0 && m_request.keep_alive){
@@ -586,6 +669,7 @@ bool HttpConn::process_write(){
         if(len < 0){
             // 发送缓冲区满
             if (errno == EAGAIN){
+                printf("Kernal write buffer is full\n");
                 register_epoll(EPOLLOUT);
                 return true;
             }
@@ -593,18 +677,19 @@ bool HttpConn::process_write(){
             perror("write buffer");
             munmap(m_file_addr, m_file_stat.st_size);
             m_file_addr = 0;
+            return false;
         }
         m_iovec_bytes_left -= len;
-        bytes_sent += len;
+        m_iovec_bytes_sent += len;
         //响应报文的 首行 header \r\n已经发完
-        if (bytes_sent >= m_iovec[0].iov_len){
+        if (m_iovec_bytes_sent >= m_iovec[0].iov_len){
             m_iovec[0].iov_len = 0;
-            m_iovec[1].iov_base = m_file_addr + bytes_sent - m_write_idx;
+            m_iovec[1].iov_base = m_file_addr + m_iovec_bytes_sent - m_write_idx;
             m_iovec[1].iov_len = m_iovec_bytes_left;
         }
         else{
-            m_iovec[0].iov_len = m_write_idx - bytes_sent;
-            m_iovec[0].iov_base = m_write_buffer + bytes_sent;
+            m_iovec[0].iov_base = m_write_buffer + m_iovec_bytes_sent;
+            m_iovec[0].iov_len = m_write_idx - m_iovec_bytes_sent;
         }
         if (m_iovec_bytes_left <= 0){
 
